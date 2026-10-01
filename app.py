@@ -51,10 +51,11 @@ def _detail(resp: requests.Response) -> str:
     return detail if isinstance(detail, str) else f"HTTP {resp.status_code}"
 
 
-def upload_file(name: str, data: bytes) -> dict[str, Any]:
+def upload_file(name: str, data: bytes, force: bool = False) -> dict[str, Any]:
     try:
         resp = requests.post(
-            f"{API_URL}/upload", files={"file": (name, data, "text/plain")}, timeout=30
+            f"{API_URL}/upload", files={"file": (name, data, "text/plain")},
+            params={"force": "true"} if force else None, timeout=30,
         )
     except requests.RequestException as exc:
         raise ApiError(f"Couldn't reach the API at {API_URL}.") from exc
@@ -71,6 +72,16 @@ def fetch_insights(run_id: str) -> dict[str, Any]:
     if resp.status_code != 200:
         raise ApiError(_detail(resp))
     return resp.json()
+
+
+def clear_cache() -> int:
+    try:
+        resp = requests.delete(f"{API_URL}/cache", timeout=30)
+    except requests.RequestException as exc:
+        raise ApiError(f"Couldn't reach the API at {API_URL}.") from exc
+    if resp.status_code != 200:
+        raise ApiError(_detail(resp))
+    return resp.json()["deleted"]
 
 
 @st.cache_data(ttl=5, show_spinner=False)
@@ -254,6 +265,17 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
 .step.done .name, .step.active .name { color: var(--text-primary); }
 .step .sub { font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); margin-top: 4px; letter-spacing: .04em; }
 @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+
+/* ---- Result source (cache vs NLP) ---- */
+.source .pill.big { font-size: 12.5px; padding: 9px 16px; color: var(--text-primary); }
+.dot.cache { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.dot.forced { background: #e0a84a; box-shadow: 0 0 0 4px rgba(224,168,74,.18); }
+.source .steps { grid-template-columns: repeat(5, 1fr); }
+.source .step.nlp .bar { background: var(--text-primary); }
+.source .step.cache .bar { background: var(--accent); }
+.source .step .name { color: var(--text-primary); }
+.source .step.cache .sub { color: var(--accent); }
+.cache-controls { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
 
 .notice {
   display: flex; gap: 14px; align-items: flex-start; background: var(--surface-1);
@@ -478,6 +500,51 @@ def pipeline(filename: str, status: str, elapsed: float, run_id: str) -> None:
     )
 
 
+STEP_LABELS = {
+    "tokens": "Tokenize",
+    "stats": "Counts",
+    "keywords": "Keywords",
+    "tone": "Tone",
+    "themes": "Themes",
+}
+
+
+def cache_source(run: dict[str, Any]) -> None:
+    """Banner saying whether this result came from the Redis cache or the NLP pipeline."""
+    cache = run.get("cache")
+    if cache is None:  # runs recorded before per-step tracking existed
+        hit = bool(run.get("cache_hit"))
+        cache = {"result": "cache" if hit else "nlp", "steps": {}, "forced": False}
+    steps = cache.get("steps") or {}
+
+    if cache.get("forced"):
+        dot, headline = "forced", "Recomputed · cache skipped"
+        detail = "Every step was re-run by the NLP pipeline and the cache was refreshed."
+    elif cache["result"] == "cache":
+        dot, headline = "cache", "Served from Redis cache"
+        detail = "This exact text was analysed before; the stored result was returned instantly."
+    elif "cache" in steps.values():
+        dot, headline = "good", "Computed · partly cached"
+        detail = "Some steps were reused from the cache; the rest ran through the NLP pipeline."
+    else:
+        dot, headline = "good", "Computed by NLP pipeline"
+        detail = "Nothing was cached for this text, so every step ran fresh."
+
+    cells = "".join(
+        f'<div class="step {src}"><div class="bar"></div>'
+        f'<div class="name">{STEP_LABELS.get(step, step)}</div>'
+        f'<div class="sub">{"Redis cache" if src == "cache" else "NLP pipeline"}</div></div>'
+        for step, src in steps.items()
+    )
+    strip = f'<div class="steps">{cells}</div>' if cells else ""
+    render(
+        '<div class="pipeline source"><div class="pipeline-top">'
+        f'<div><div class="mono">Result source</div><div class="footnote" style="margin-top:6px">{detail}</div></div>'
+        f'<div class="pill big"><span class="dot {dot}"></span>{headline}</div>'
+        f"</div>{strip}</div>"
+    )
+
+
 def marquee(keywords: list[dict[str, Any]]) -> None:
     words = [k["word"] for k in keywords] or ["no", "keywords", "found"]
     items = "".join(f"<span>{esc(w)}</span><i>✳</i>" for w in words)
@@ -672,7 +739,10 @@ def insight_cards(result: dict[str, Any]) -> None:
 
 
 def meta_footer(run: dict[str, Any], elapsed: float | None) -> None:
-    cached = "Redis cache hit" if run.get("cache_hit") else "Fresh analysis"
+    if (run.get("cache") or {}).get("forced"):
+        cached = "Recomputed (cache skipped)"
+    else:
+        cached = "Redis cache hit" if run.get("cache_hit") else "Fresh analysis"
     took = f"{elapsed:0.1f}s · {cached}" if elapsed is not None else cached
     render(
         '<div class="meta">'
@@ -705,7 +775,7 @@ def submit(file) -> None:
         st.session_state.update(phase="error", error=("File too large", "The limit is 5 MB."))
         return
     try:
-        resp = upload_file(file.name, data)
+        resp = upload_file(file.name, data, force=st.session_state.get("force", False))
     except ApiError as exc:
         st.session_state.update(phase="error", error=("Upload rejected", str(exc)))
         return
@@ -779,11 +849,29 @@ def upload_section() -> None:
         elif st.button("Analyse text  →", type="primary", disabled=file is None or busy, width="stretch"):
             submit(file)
             st.rerun()
+        cache_controls(busy)
+
+
+def cache_controls(busy: bool) -> None:
+    left, right = st.columns([1.4, 1], vertical_alignment="center")
+    with left:
+        st.toggle("Skip cache, re-run NLP", key="force", disabled=busy,
+                  help="Ignore any cached result for this file and recompute every step.")
+    with right:
+        if st.button("Clear cache", type="secondary", disabled=busy, width="stretch",
+                     help="Delete every cached NLP result in Redis."):
+            try:
+                n = clear_cache()
+            except ApiError as exc:
+                st.toast(f"Couldn't clear the cache: {exc}", icon="⚠️")
+            else:
+                st.toast(f"Cleared {n} cached entr{'y' if n == 1 else 'ies'}", icon="🧹")
 
 
 def dashboard(run: dict[str, Any]) -> None:
     result = run["result"]
     marquee(result["top_keywords"])
+    cache_source(run)
 
     section("02", "At a glance", "Overview")
     stat_tiles(result)

@@ -76,6 +76,36 @@ def test_empty_file_completes_with_empty_insights(client):
     assert body["result"]["word_count"] == 0
 
 
+def test_force_upload_skips_cache(client):
+    text = b"Same text twice."
+    _wait_for(client, _upload(client, "a.txt", text).json()["run_id"])
+
+    resp = client.post("/upload?force=true", files={"file": ("a.txt", text, "text/plain")})
+    assert resp.json()["force"] is True
+    body = _wait_for(client, resp.json()["run_id"])
+    assert body["cache_hit"] is False
+    assert body["cache"]["forced"] is True
+    assert set(body["cache"]["steps"].values()) == {"nlp"}
+
+
+def test_clear_cache_removes_cached_results_but_keeps_runs(client, redis_server):
+    run_id = _upload(client, "a.txt", b"Cache me please.").json()["run_id"]
+    _wait_for(client, run_id)
+    assert redis_server.keys(f"{store.PREFIX}:result:*")
+
+    resp = client.delete("/cache")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] == 6  # 5 steps + final result
+    assert redis_server.keys(f"{store.PREFIX}:step:*") == []
+    assert redis_server.keys(f"{store.PREFIX}:result:*") == []
+    assert client.get(f"/insights/{run_id}").status_code == 200
+
+    # The next upload of the same text is computed afresh.
+    body = _wait_for(client, _upload(client, "a.txt", b"Cache me please.").json()["run_id"])
+    assert body["cache"]["result"] == "nlp"
+    assert client.delete("/cache").json()["deleted"] == 6
+
+
 def test_unknown_run_id_is_404(client):
     assert client.get(f"/insights/{uuid.uuid4()}").status_code == 404
 
@@ -90,6 +120,7 @@ def test_redis_down_returns_503(client, monkeypatch, tmp_path):
     assert _upload(client, "a.txt", b"text").status_code == 503
     assert list(main.UPLOAD_DIR.iterdir()) == []  # no orphaned upload
     assert client.get(f"/insights/{uuid.uuid4()}").status_code == 503
+    assert client.delete("/cache").status_code == 503
 
 
 # --- Validation happens synchronously, before any flow is started ------------

@@ -6,7 +6,8 @@ Key layout (all under ``PREFIX``):
   result:{digest}:{top_n}  string -- JSON of the final insights payload
 
 ``digest`` is the SHA-256 of the file's text, so identical uploads share cached
-steps and results regardless of filename.
+steps and results regardless of filename. ``clear_cache`` drops every step and
+result key (run records are kept).
 
 Hash fields are stored JSON-encoded so non-string values (result dicts, bools)
 round-trip without per-field special cases.
@@ -85,6 +86,21 @@ def get_run(r: redis.Redis, run_id: str) -> dict[str, Any] | None:
     if not raw:
         return None
     return {k: json.loads(v) for k, v in raw.items()}
+
+
+def clear_cache(r: redis.Redis) -> int:
+    """Delete all cached step and result keys; returns how many were removed."""
+    deleted = 0
+    for pattern in (f"{PREFIX}:step:*", f"{PREFIX}:result:*"):
+        batch: list[str] = []
+        for key in r.scan_iter(match=pattern, count=500):
+            batch.append(key)
+            if len(batch) >= 500:
+                deleted += r.delete(*batch)
+                batch.clear()
+        if batch:
+            deleted += r.delete(*batch)
+    return deleted
 
 
 # --- Run status + caching (async: used inside the Prefect flow) ---------------

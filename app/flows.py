@@ -4,7 +4,10 @@ Pipeline:
   read file -> tokenize -> (stats | keywords | tone | themes, concurrently) -> assemble
 
 Each NLP step's output is cached in Redis by content hash, and so is the final
-payload; a repeat upload of the same text is served straight from the cache.
+payload; a repeat upload of the same text is served straight from the cache
+(unless `force` is set, which recomputes everything and overwrites the cache).
+The run record's `cache` field says which parts came from the cache vs the NLP
+pipeline.
 Run status is written to Redis as the flow progresses so the API can report it.
 """
 
@@ -71,21 +74,30 @@ async def _cached_step(
     step: str,
     task_fn: Callable[..., Awaitable[Any]],
     *args: Any,
-) -> Any:
-    """Return the cached output of `step` for this text, or run the task and cache it."""
+    force: bool = False,
+) -> tuple[Any, str]:
+    """Return (output, source) for `step`: the cached value with source "cache", or
+    a fresh task result (written back to the cache) with source "nlp".
+
+    With `force`, the cache is not read but is still overwritten.
+    """
     key = store.step_key(digest, step)
-    cached = await store.aget_json(r, key)
-    if cached is not None:
-        get_run_logger().info("Cache hit for step %r", step)
-        return cached
+    if not force:
+        cached = await store.aget_json(r, key)
+        if cached is not None:
+            get_run_logger().info("Cache hit for step %r", step)
+            return cached, "cache"
     value = await task_fn(*args)
     await store.aset_json(r, key, value)
-    return value
+    return value, "nlp"
+
+
+STEP_NAMES = ("tokens", "stats", "keywords", "tone", "themes")
 
 
 @flow(name="textlens-analysis")
 async def analyze_file_flow(
-    file_path: str, run_id: str, top_n: int = nlp_engine.TOP_KEYWORDS
+    file_path: str, run_id: str, top_n: int = nlp_engine.TOP_KEYWORDS, force: bool = False
 ) -> dict[str, Any]:
     logger = get_run_logger()
     r = store.get_async_client()
@@ -96,24 +108,36 @@ async def analyze_file_flow(
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         result_key = store.result_key(digest, top_n)
 
-        result = await store.aget_json(r, result_key)
+        result = None if force else await store.aget_json(r, result_key)
         cache_hit = result is not None
         if cache_hit:
             logger.info("Final result cache hit for digest %s", digest[:12])
+            steps = dict.fromkeys(STEP_NAMES, "cache")
         else:
-            tokens = await _cached_step(r, digest, "tokens", tokenize, text)
+            if force:
+                logger.info("Cache bypassed (force) for digest %s", digest[:12])
+            tokens, tokens_src = await _cached_step(
+                r, digest, "tokens", tokenize, text, force=force
+            )
             words = tokens["words"]
-            stats, keywords, tone, themes = await asyncio.gather(
-                _cached_step(r, digest, "stats", count_stats, tokens),
-                _cached_step(r, digest, f"keywords:{top_n}", extract_keywords, words, top_n),
-                _cached_step(r, digest, "tone", analyze_tone, text, words),
-                _cached_step(r, digest, "themes", detect_themes, words),
+            (stats, stats_src), (keywords, kw_src), (tone, tone_src), (themes, themes_src) = (
+                await asyncio.gather(
+                    _cached_step(r, digest, "stats", count_stats, tokens, force=force),
+                    _cached_step(r, digest, f"keywords:{top_n}", extract_keywords,
+                                 words, top_n, force=force),
+                    _cached_step(r, digest, "tone", analyze_tone, text, words, force=force),
+                    _cached_step(r, digest, "themes", detect_themes, words, force=force),
+                )
             )
             result = {**stats, "top_keywords": keywords, "tone": tone, "themes": themes}
             await store.aset_json(r, result_key, result)
+            steps = {"tokens": tokens_src, "stats": stats_src, "keywords": kw_src,
+                     "tone": tone_src, "themes": themes_src}
 
+        cache = {"result": "cache" if cache_hit else "nlp", "steps": steps, "forced": force}
         await store.aupdate_run(
-            r, run_id, status=RunStatus.COMPLETED, result=result, cache_hit=cache_hit
+            r, run_id, status=RunStatus.COMPLETED, result=result, cache_hit=cache_hit,
+            cache=cache,
         )
         return result
     except Exception as exc:
@@ -125,14 +149,14 @@ async def analyze_file_flow(
         await r.aclose()
 
 
-def run_analysis(file_path: str, run_id: str) -> None:
+def run_analysis(file_path: str, run_id: str, force: bool = False) -> None:
     """Blocking entry point for running the flow off the API's event loop.
 
     Always deletes the uploaded file afterwards. Failures are already recorded
     in the run status by the flow, so they are only logged here.
     """
     try:
-        asyncio.run(analyze_file_flow(file_path=file_path, run_id=run_id))
+        asyncio.run(analyze_file_flow(file_path=file_path, run_id=run_id, force=force))
     except Exception:
         log.exception("NLP flow failed for run %s", run_id)
     finally:

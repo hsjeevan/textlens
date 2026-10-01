@@ -15,7 +15,7 @@ from pathlib import Path, PurePath
 from typing import Any
 
 import redis
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, status
 
 from app import store
 from app.flows import run_analysis
@@ -109,7 +109,11 @@ def _redis_unavailable(exc: redis.RedisError) -> HTTPException:
 
 
 @app.post("/upload", status_code=status.HTTP_202_ACCEPTED)
-def upload(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+def upload(
+    request: Request,
+    file: UploadFile = File(...),
+    force: bool = Query(False, description="Skip cached results and re-run the NLP pipeline."),
+) -> dict[str, Any]:
     """Validate and store the file, then start the Prefect flow in the background."""
     try:
         text = _read_text(file)
@@ -127,13 +131,25 @@ def upload(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
         path.unlink(missing_ok=True)
         raise _redis_unavailable(exc)
 
-    request.app.state.executor.submit(run_analysis, str(path), run_id)
+    request.app.state.executor.submit(run_analysis, str(path), run_id, force)
 
     return {
         "run_id": run_id,
         "status": RunStatus.PENDING,
+        "force": force,
         "status_url": request.app.url_path_for("get_insights", run_id=run_id),
     }
+
+
+@app.delete("/cache")
+def clear_cache() -> dict[str, int]:
+    """Drop every cached NLP step and result; the next upload of any text runs fresh."""
+    try:
+        deleted = store.clear_cache(store.get_sync_client())
+    except redis.RedisError as exc:
+        raise _redis_unavailable(exc)
+    log.info("Cleared %d cache keys", deleted)
+    return {"deleted": deleted}
 
 
 @app.get("/insights/{run_id}")

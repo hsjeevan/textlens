@@ -28,8 +28,11 @@ def _new_run(redis_server):
     return run_id
 
 
-def _run_flow(path, run_id):
-    return asyncio.run(analyze_file_flow(file_path=str(path), run_id=run_id))
+def _run_flow(path, run_id, force=False):
+    return asyncio.run(analyze_file_flow(file_path=str(path), run_id=run_id, force=force))
+
+
+STEPS = ("tokens", "stats", "keywords", "tone", "themes")
 
 
 def test_flow_matches_synchronous_engine(redis_server, text_file):
@@ -67,7 +70,19 @@ def test_repeat_content_is_served_from_cache(redis_server, text_file, tmp_path):
     copy.write_text(TEXT, encoding="utf-8")
     run_id = _new_run(redis_server)
     assert _run_flow(copy, run_id) == first
-    assert store.get_run(redis_server, run_id)["cache_hit"] is True
+    run = store.get_run(redis_server, run_id)
+    assert run["cache_hit"] is True
+    assert run["cache"] == {
+        "result": "cache", "steps": dict.fromkeys(STEPS, "cache"), "forced": False
+    }
+
+
+def test_fresh_run_reports_nlp_source(redis_server, text_file):
+    run_id = _new_run(redis_server)
+    _run_flow(text_file, run_id)
+    assert store.get_run(redis_server, run_id)["cache"] == {
+        "result": "nlp", "steps": dict.fromkeys(STEPS, "nlp"), "forced": False
+    }
 
 
 def test_partial_step_cache_is_reused(redis_server, text_file):
@@ -75,8 +90,30 @@ def test_partial_step_cache_is_reused(redis_server, text_file):
     sentinel = {"label": "cached", "scores": {}, "indicators": {}}
     redis_server.set(store.step_key(digest, "tone"), json.dumps(sentinel))
 
-    result = _run_flow(text_file, _new_run(redis_server))
+    run_id = _new_run(redis_server)
+    result = _run_flow(text_file, run_id)
     assert result["tone"] == sentinel
+    steps = store.get_run(redis_server, run_id)["cache"]["steps"]
+    assert steps == {**dict.fromkeys(STEPS, "nlp"), "tone": "cache"}
+
+
+def test_force_skips_and_overwrites_cache(redis_server, text_file):
+    _run_flow(text_file, _new_run(redis_server))
+    digest = hashlib.sha256(TEXT.encode()).hexdigest()
+    sentinel = {"label": "stale", "scores": {}, "indicators": {}}
+    redis_server.set(store.step_key(digest, "tone"), json.dumps(sentinel))
+
+    run_id = _new_run(redis_server)
+    result = _run_flow(text_file, run_id, force=True)
+
+    assert result == analyze_text(TEXT)
+    run = store.get_run(redis_server, run_id)
+    assert run["cache_hit"] is False
+    assert run["cache"] == {
+        "result": "nlp", "steps": dict.fromkeys(STEPS, "nlp"), "forced": True
+    }
+    # The stale step was replaced with the fresh value.
+    assert json.loads(redis_server.get(store.step_key(digest, "tone"))) == result["tone"]
 
 
 def test_flow_failure_is_recorded(redis_server, tmp_path):
