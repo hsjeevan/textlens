@@ -30,7 +30,7 @@ THEME_NAMES = {
 }
 
 st.set_page_config(
-    page_title="TextLens — Text intelligence",
+    page_title="TextLens - Text intelligence",
     page_icon="◐",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -577,7 +577,7 @@ def stat_tiles(result: dict[str, Any]) -> None:
 
 def keyword_panel(keywords: list[dict[str, Any]]) -> None:
     if not keywords:
-        render('<div class="panel"><div class="footnote">No keywords — the text has no content words.</div></div>')
+        render('<div class="panel"><div class="footnote">No keywords - the text has no content words.</div></div>')
         return
     top = max(k["count"] for k in keywords)
     total = sum(k["count"] for k in keywords)
@@ -587,7 +587,7 @@ def keyword_panel(keywords: list[dict[str, Any]]) -> None:
         share = k["count"] / total * 100
         noun = "occurrence" if k["count"] == 1 else "occurrences"
         rows.append(
-            f'<div class="bar-row" data-tip="{esc(k["word"])} — {k["count"]} {noun} · {share:.0f}% of top keywords">'
+            f'<div class="bar-row" data-tip="{esc(k["word"])} - {k["count"]} {noun} · {share:.0f}% of top keywords">'
             f'<span class="rank">{i:02d}</span><span class="word">{esc(k["word"])}</span>'
             f'<span class="track"><span class="fill" style="width:{width:.1f}%;'
             f'animation-delay:{i * 45}ms"></span><span class="count">{k["count"]}</span></span></div>'
@@ -617,7 +617,7 @@ def tone_panel(tone: dict[str, Any]) -> None:
         # Only label inside a segment when the text comfortably fits.
         label = f"{pct:.0f}%" if pct >= 12 else ""
         segs.append(
-            f'<div class="seg {key}" style="flex:{pct:.2f}" data-tip="{name} — {pct:.0f}%">{label}</div>'
+            f'<div class="seg {key}" style="flex:{pct:.2f}" data-tip="{name} - {pct:.0f}%">{label}</div>'
         )
     stack = "".join(segs) or '<div class="seg neu" style="flex:1"></div>'
     legend = "".join(
@@ -659,7 +659,7 @@ def theme_panel(themes: dict[str, Any]) -> None:
     for i, (theme, n) in enumerate(ordered, 1):
         name = THEME_NAMES.get(theme, theme.replace("_", " ").capitalize())
         rows.append(
-            f'<div class="bar-row" data-tip="{esc(name)} — {n} trigger word{"s" if n != 1 else ""}">'
+            f'<div class="bar-row" data-tip="{esc(name)} - {n} trigger word{"s" if n != 1 else ""}">'
             f'<span class="rank">{i:02d}</span><span class="word">{esc(name)}</span>'
             f'<span class="track"><span class="fill" style="width:{n / top * 100:.1f}%;'
             f'animation-delay:{i * 60}ms"></span><span class="count">{n}</span></span></div>'
@@ -746,10 +746,10 @@ def meta_footer(run: dict[str, Any], elapsed: float | None) -> None:
     took = f"{elapsed:0.1f}s · {cached}" if elapsed is not None else cached
     render(
         '<div class="meta">'
-        f'<div><span class="mono">File</span><b>{esc(run.get("filename") or "—")}</b></div>'
+        f'<div><span class="mono">File</span><b>{esc(run.get("filename") or "-")}</b></div>'
         f'<div><span class="mono">Processed</span><b>{esc(took)}</b></div>'
-        f'<div><span class="mono">Run ID</span><b>{esc(run.get("run_id", "—"))}</b></div>'
-        f'<div><span class="mono">Prefect flow run</span><b>{esc(run.get("flow_run_id") or "—")}</b></div>'
+        f'<div><span class="mono">Run ID</span><b>{esc(run.get("run_id", "-"))}</b></div>'
+        f'<div><span class="mono">Prefect flow run</span><b>{esc(run.get("flow_run_id") or "-")}</b></div>'
         "</div>"
     )
 

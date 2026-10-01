@@ -40,6 +40,21 @@ This builds `textlens-api:latest` (from `Dockerfile`) and
 `textlens-frontend:latest` (from `Dockerfile.frontend`). The first build takes
 a few minutes.
 
+**Then, only if your cluster runs in kind mode**, copy the images into the
+cluster. Check the node name with `kubectl get nodes`. If it's
+`desktop-control-plane`, Docker Desktop is running Kubernetes with kind. That
+node has its own image store, so it doesn't see what `docker compose build`
+produced. (If the node is called `docker-desktop`, skip this step.)
+
+```powershell
+docker save textlens-api:latest textlens-frontend:latest -o "$env:TEMP\textlens.tar"
+docker cp "$env:TEMP\textlens.tar" desktop-control-plane:/textlens.tar
+docker exec desktop-control-plane ctr -n k8s.io images import --all-platforms /textlens.tar
+docker exec desktop-control-plane rm /textlens.tar
+```
+
+Repeat this after every rebuild. Otherwise the pods keep running the old image.
+
 **2. Deploy**
 
 ```powershell
@@ -83,7 +98,7 @@ example `8088:80`.
 | Check status | `kubectl get pods -n textlens` |
 | Stop the app (keep everything deployed) | `kubectl scale deploy --all -n textlens --replicas=0` |
 | Start it again | `kubectl apply -n textlens -f k8s\` |
-| Redeploy after code changes | `docker compose build` then `kubectl rollout restart -n textlens deploy/textlens-api deploy/textlens-frontend` |
+| Redeploy after code changes | `docker compose build`, then copy the images into the cluster in kind mode (see step 1), then `kubectl rollout restart -n textlens deploy/textlens-api deploy/textlens-frontend`, then stop and restart the port-forwards (step 3) |
 | Follow API logs | `kubectl logs -n textlens deploy/textlens-api -f` |
 | Follow dashboard logs | `kubectl logs -n textlens deploy/textlens-frontend -f` |
 | Stop the port-forwards | `Get-Process kubectl \| Stop-Process` (stops **every** running `kubectl`) |
@@ -99,7 +114,7 @@ ClusterIP Services, all in the `textlens` namespace:
 
 | Component | Deployment / Service | Replicas | Connects to |
 |---|---|---|---|
-| Redis | `textlens-redis` | 1 | — |
+| Redis | `textlens-redis` | 1 | - |
 | API | `textlens-api` | 2 | Redis via `REDIS_URL=redis://textlens-redis:6379/0` |
 | Dashboard | `textlens-frontend` | 1 | API via `TEXTLENS_API_URL=http://textlens-api` |
 
@@ -121,6 +136,10 @@ The last command checks that the dashboard pod can reach the API.
   `docker-desktop` context.
 - **The dashboard says it can't reach the API:** check the API pods are
   `Running` and `1/1` ready.
+- **The UI doesn't change after a redeploy:** the cluster is in kind mode and
+  still has the old image. Check with
+  `kubectl exec -n textlens deploy/textlens-frontend -- cat app.py`. Copy the
+  images into the cluster (step 1), then run `rollout restart` again.
 - **`localhost:8501` doesn't load:** the port-forward has stopped (they exit
   when pods are restarted). Start it again.
 
