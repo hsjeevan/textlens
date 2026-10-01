@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1
+
+# Streamlit dashboard (app.py). Talks to the API over HTTP via TEXTLENS_API_URL.
+ARG PYTHON_VERSION=3.14
+FROM python:${PYTHON_VERSION}-slim
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+COPY requirements-frontend.txt .
+RUN pip install -r requirements-frontend.txt
+
+COPY .streamlit/ .streamlit/
+COPY app.py .
+
+RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app
+USER 10001
+EXPOSE 8501
+
+CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]

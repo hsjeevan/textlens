@@ -1,0 +1,51 @@
+# Services for the TextLens stack. All are internal (ClusterIP); see
+# README.md for reaching the dashboard and API locally with `kubectl port-forward`.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  # This name is the host in the API's REDIS_URL (deployment.yaml).
+  name: textlens-redis
+  labels:
+    app.kubernetes.io/name: textlens-redis
+    app.kubernetes.io/part-of: textlens
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: textlens-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: textlens-api
+  labels:
+    app.kubernetes.io/name: textlens-api
+    app.kubernetes.io/part-of: textlens
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: textlens-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: textlens-frontend
+  labels:
+    app.kubernetes.io/name: textlens-frontend
+    app.kubernetes.io/part-of: textlens
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: textlens-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

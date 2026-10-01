@@ -1,0 +1,16 @@
+.venv/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.git/
+.DS_Store
+tests/
+uploads/
+k8s/
+*.txt
+!requirements.txt
+!requirements-frontend.txt
+docker-compose.yml
+Dockerfile
+README.md
+steps.md

@@ -1,0 +1,240 @@
+# Deployments for the TextLens stack: the FastAPI web service, the Redis
+# instance it uses for run status and cached results, and the Streamlit
+# dashboard.
+#
+# The API reaches Redis through the `textlens-redis` Service (see service.yaml)
+# via REDIS_URL, and the dashboard reaches the API through the `textlens-api`
+# Service via TEXTLENS_API_URL, so all must be applied to the same namespace.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: textlens-redis
+  labels:
+    app.kubernetes.io/name: textlens-redis
+    app.kubernetes.io/part-of: textlens
+spec:
+  replicas: 1
+  # Never run two Redis pods at once during an update.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: textlens-redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: textlens-redis
+        app.kubernetes.io/part-of: textlens
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999 # the image's `redis` user
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          # Redis holds only a cache and short-lived run status, so persistence
+          # is off. Every key has a TTL; LRU eviction kicks in if memory fills.
+          args:
+            - --save
+            - ""
+            - --appendonly
+            - "no"
+            - --maxmemory
+            - 200mb
+            - --maxmemory-policy
+            - allkeys-lru
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: textlens-api
+  labels:
+    app.kubernetes.io/name: textlens-api
+    app.kubernetes.io/part-of: textlens
+spec:
+  # Any replica can answer GET /insights, since run status lives in Redis. The
+  # flow for an upload runs on the pod that received it.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: textlens-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: textlens-api
+        app.kubernetes.io/part-of: textlens
+    spec:
+      # Time for in-flight flow runs to finish when a pod is stopped.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001 # the image's `app` user
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: textlens-api:latest
+          # Use the locally built image; don't try to pull it from a registry.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            # Service DNS name of Redis (service.yaml), same namespace.
+            - name: REDIS_URL
+              value: redis://textlens-redis:6379/0
+            - name: UPLOAD_DIR
+              value: /tmp/uploads
+            - name: PREFECT_HOME
+              value: /tmp/prefect
+            - name: TEXTLENS_MAX_CONCURRENT_RUNS
+              value: "4"
+            - name: TEXTLENS_RUN_TTL_SECONDS
+              value: "86400"
+            - name: TEXTLENS_CACHE_TTL_SECONDS
+              value: "604800"
+          # Prefect starts a local API server on the first flow run, so give
+          # startup some headroom before liveness checks take over.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # The only writable path: uploads and Prefect's local database.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: textlens-frontend
+  labels:
+    app.kubernetes.io/name: textlens-frontend
+    app.kubernetes.io/part-of: textlens
+spec:
+  # One replica: Streamlit keeps each browser session's state in memory, so
+  # several replicas would need sticky sessions.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: textlens-frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: textlens-frontend
+        app.kubernetes.io/part-of: textlens
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001 # the image's `app` user
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: frontend
+          image: textlens-frontend:latest
+          # Use the locally built image; don't try to pull it from a registry.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8501
+          env:
+            # Service DNS name of the API (service.yaml), same namespace.
+            - name: TEXTLENS_API_URL
+              value: http://textlens-api
+            # Streamlit writes small files under $HOME; point it at the
+            # writable emptyDir since the root filesystem is read-only.
+            - name: HOME
+              value: /tmp
+          readinessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 100Mi

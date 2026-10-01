@@ -1,0 +1,16 @@
+[theme]
+base = "dark"
+primaryColor = "#3987e5"
+backgroundColor = "#0d0d0c"
+secondaryBackgroundColor = "#1a1a19"
+textColor = "#ffffff"
+
+[server]
+# Matches the API's 5 MB limit so oversized files are rejected client-side.
+maxUploadSize = 5
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

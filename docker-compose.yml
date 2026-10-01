@@ -1,0 +1,30 @@
+name: textlens
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  # `docker compose up -d redis` still starts Redis alone for local development.
+  api:
+    build: .
+    image: textlens-api:latest
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: textlens-frontend:latest
+    environment:
+      TEXTLENS_API_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api

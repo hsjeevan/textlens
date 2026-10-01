@@ -1,0 +1,15 @@
+ACME CORPORATION INFORMATION SECURITY & REMOTE WORK POLICY
+Effective Date: January 1, 2026
+Document ID: SEC-POL-042
+
+1. Purpose and Scope
+This policy outlines the security standards for all employees, contractors, and third-party vendors accessing Acme Corporation networks, systems, and data. Protecting our intellectual property and client data from cybersecurity threats is a top priority for our organization.
+
+2. Password and Authentication Guidelines
+All employees must use multi-factor authentication (MFA) for all corporate applications, cloud storage, and email accounts. Passwords must be at least 12 characters long, containing a mix of uppercase letters, lowercase letters, numbers, and special symbols. Reusing previous passwords is strictly prohibited, and passwords must be rotated every 90 days.
+
+3. Remote Work and Public Wi-Fi Security
+When working remotely, employees must ensure their home network is secured with WPA3 encryption. Connecting to unencrypted public Wi-Fi networks (such as those in coffee shops, airports, or hotels) without using the corporate Virtual Private Network (VPN) is a severe violation of data privacy protocols. Screen privacy filters should be used in public spaces to prevent visual data breaches.
+
+4. Incident Reporting and Compliance
+Any suspected data breach, unauthorized access, phishing attempt, or lost device must be reported immediately to the IT Security Team within two hours of discovery. Non-compliance with these cybersecurity mandates may result in disciplinary action up to and including termination of employment. Regular audits will be conducted quarterly to ensure total adherence across all departments.

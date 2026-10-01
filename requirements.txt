@@ -1,0 +1,6 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+prefect>=3.0
+redis>=5.0
+nltk>=3.9
+python-multipart>=0.0.9
