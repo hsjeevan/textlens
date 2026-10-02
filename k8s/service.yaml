@@ -1,5 +1,6 @@
-# Services for the TextLens stack. All are internal (ClusterIP); see
-# README.md for reaching the dashboard and API locally with `kubectl port-forward`.
+# Services for the TextLens stack. Redis is internal (ClusterIP). The API and
+# dashboard are LoadBalancer Services: Docker Desktop publishes them on
+# localhost (API on 8000, dashboard on 8501), so no port-forward is needed.
 ---
 apiVersion: v1
 kind: Service
@@ -26,12 +27,12 @@ metadata:
     app.kubernetes.io/name: textlens-api
     app.kubernetes.io/part-of: textlens
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   selector:
     app.kubernetes.io/name: textlens-api
   ports:
     - name: http
-      port: 80
+      port: 8000
       targetPort: http
 ---
 apiVersion: v1
@@ -42,10 +43,10 @@ metadata:
     app.kubernetes.io/name: textlens-frontend
     app.kubernetes.io/part-of: textlens
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   selector:
     app.kubernetes.io/name: textlens-frontend
   ports:
     - name: http
-      port: 80
+      port: 8501
       targetPort: http
