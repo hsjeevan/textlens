@@ -1,6 +1,6 @@
 # Deployments for the TextLens stack: the FastAPI web service, the Redis
-# instance it uses for run status and cached results, and the Streamlit
-# dashboard.
+# instance it uses for run status and cached results, and the React dashboard
+# (static files served by nginx, which also proxies /api/* to the API).
 #
 # The API reaches Redis through the `textlens-redis` Service (see service.yaml)
 # via REDIS_URL, and the dashboard reaches the API through the `textlens-api`
@@ -174,9 +174,9 @@ metadata:
     app.kubernetes.io/name: textlens-frontend
     app.kubernetes.io/part-of: textlens
 spec:
-  # One replica: Streamlit keeps each browser session's state in memory, so
-  # several replicas would need sticky sessions.
-  replicas: 1
+  # The dashboard is static and keeps all state in the browser, so any
+  # replica can serve any request.
+  replicas: 2
   selector:
     matchLabels:
       app.kubernetes.io/name: textlens-frontend
@@ -188,8 +188,8 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
-        runAsUser: 10001 # the image's `app` user
-        fsGroup: 10001
+        runAsUser: 101 # the nginx-unprivileged image's `nginx` user
+        fsGroup: 101
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -199,42 +199,46 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
-              containerPort: 8501
+              containerPort: 8080
           env:
             # Service DNS name of the API (service.yaml), same namespace.
+            # nginx proxies /api/* here.
             - name: TEXTLENS_API_URL
               value: http://textlens-api
-            # Streamlit writes small files under $HOME; point it at the
-            # writable emptyDir since the root filesystem is read-only.
-            - name: HOME
-              value: /tmp
           readinessProbe:
             httpGet:
-              path: /_stcore/health
+              path: /healthz
               port: http
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /_stcore/health
+              path: /healthz
               port: http
             initialDelaySeconds: 10
             periodSeconds: 20
             timeoutSeconds: 5
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
+              cpu: 25m
+              memory: 32Mi
             limits:
-              memory: 512Mi
+              memory: 128Mi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           volumeMounts:
+            # The root filesystem is read-only: nginx keeps its pid and temp
+            # files in /tmp, and renders its config from the template into conf.d.
             - name: tmp
               mountPath: /tmp
+            - name: conf
+              mountPath: /etc/nginx/conf.d
       volumes:
         - name: tmp
           emptyDir:
             sizeLimit: 100Mi
+        - name: conf
+          emptyDir:
+            sizeLimit: 1Mi

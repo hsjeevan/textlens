@@ -9,8 +9,9 @@ uploads/
 k8s/
 *.txt
 !requirements.txt
-!requirements-frontend.txt
 docker-compose.yml
 Dockerfile
 README.md
 steps.md
+frontend/node_modules/
+frontend/dist/

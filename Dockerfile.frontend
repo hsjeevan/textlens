@@ -1,22 +1,29 @@
 # syntax=docker/dockerfile:1
 
-# Streamlit dashboard (app.py). Talks to the API over HTTP via TEXTLENS_API_URL.
-ARG PYTHON_VERSION=3.14
-FROM python:${PYTHON_VERSION}-slim
+# React dashboard (frontend/). Built with Vite, then served by nginx, which also
+# proxies /api/* to the API at TEXTLENS_API_URL.
 
-ENV PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONUNBUFFERED=1
+# --- Stage 1: build the static bundle ----------------------------------------
+FROM node:24-alpine AS build
+WORKDIR /src
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
 
-WORKDIR /app
-COPY requirements-frontend.txt .
-RUN pip install -r requirements-frontend.txt
+# --- Stage 2: serve it -------------------------------------------------------
+# The unprivileged image runs as uid 101 and keeps its pid and temp files in /tmp.
+FROM nginxinc/nginx-unprivileged:1.29-alpine
 
-COPY .streamlit/ .streamlit/
-COPY app.py .
+ENV TEXTLENS_API_URL=http://localhost:8000
+# Only substitute our variable; nginx's own $vars must be left alone.
+ENV NGINX_ENVSUBST_FILTER=TEXTLENS_API_URL
 
-RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app
-USER 10001
-EXPOSE 8501
+USER root
+RUN rm -f /etc/nginx/conf.d/default.conf
+USER 101
 
-CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]
+COPY frontend/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=build /src/dist /usr/share/nginx/html
+
+EXPOSE 8080
