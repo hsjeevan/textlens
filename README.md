@@ -3,17 +3,20 @@
 A FastAPI service that analyses uploaded `.txt` files. It reports word and
 sentence counts, the top keywords, tone (sentiment) and themes. Each upload is
 processed in the background by a Prefect flow, and run status and results are
-cached in Redis. A Streamlit dashboard sits in front of the API.
+cached in Redis. A React dashboard (served by nginx, which also proxies
+`/api/*` to the API) sits in front of it.
 
 ```
-Browser ──► Streamlit dashboard ──► POST /upload ──► validate & save file ──► Prefect flow (background thread)
-                                          │                                     read → tokenize → stats | keywords | tone | themes
-                                          ▼                                     (step outputs + final result cached in Redis)
-                                      202 {run_id}
-                                    GET /insights/{run_id} ◄── run status / result from Redis
+Browser ──► React dashboard (nginx) ──► POST /upload ──► validate & save file ──► Prefect flow (background thread)
+                                              │                                     read → tokenize → stats | keywords | tone | themes
+                                              ▼                                     (step outputs + final result cached in Redis)
+                                          202 {run_id}
+                                        GET /insights/{run_id} ◄── run status / result from Redis
 ```
 
-All commands below are for **Windows PowerShell**, run from the repository root.
+Run all commands from the repository root. Most commands work in any shell.
+Where Windows and macOS differ, both versions are shown: **PowerShell** for
+Windows, and **zsh/bash** for macOS (and Linux).
 
 ## Quick start on Kubernetes (recommended)
 
@@ -26,13 +29,13 @@ Kubernetes**, which can use locally built images without a registry.
   with Kubernetes turned on (Settings → Kubernetes → Enable Kubernetes)
 - `kubectl` (Docker Desktop installs it). Check it points at Docker Desktop:
 
-```powershell
+```shell
 kubectl config current-context    # expect: docker-desktop
 ```
 
 **1. Build the images**
 
-```powershell
+```shell
 docker compose build
 ```
 
@@ -46,20 +49,33 @@ cluster. Check the node name with `kubectl get nodes`. If it's
 node has its own image store, so it doesn't see what `docker compose build`
 produced. (If the node is called `docker-desktop`, skip this step.)
 
+Windows (PowerShell):
+
 ```powershell
 docker save textlens-api:latest textlens-frontend:latest -o "$env:TEMP\textlens.tar"
 docker cp "$env:TEMP\textlens.tar" desktop-control-plane:/textlens.tar
 docker exec desktop-control-plane ctr -n k8s.io images import --all-platforms /textlens.tar
 docker exec desktop-control-plane rm /textlens.tar
+Remove-Item "$env:TEMP\textlens.tar"
+```
+
+macOS (zsh/bash):
+
+```bash
+docker save textlens-api:latest textlens-frontend:latest -o "${TMPDIR:-/tmp}/textlens.tar"
+docker cp "${TMPDIR:-/tmp}/textlens.tar" desktop-control-plane:/textlens.tar
+docker exec desktop-control-plane ctr -n k8s.io images import --all-platforms /textlens.tar
+docker exec desktop-control-plane rm /textlens.tar
+rm "${TMPDIR:-/tmp}/textlens.tar"
 ```
 
 Repeat this after every rebuild. Otherwise the pods keep running the old image.
 
 **2. Deploy**
 
-```powershell
+```shell
 kubectl create namespace textlens --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -n textlens -f k8s\
+kubectl apply -n textlens -f k8s/
 kubectl rollout status -n textlens deploy/textlens-redis
 kubectl rollout status -n textlens deploy/textlens-api
 kubectl rollout status -n textlens deploy/textlens-frontend
@@ -69,27 +85,26 @@ The first line creates the namespace, and does nothing if it already exists.
 
 **3. Open the dashboard**
 
-All Services are internal to the cluster, so forward them to your machine.
-Each `port-forward` keeps running until you stop it, so start them as hidden
-background processes:
-
-```powershell
-Start-Process kubectl -ArgumentList 'port-forward -n textlens svc/textlens-frontend 8501:80' -WindowStyle Hidden
-Start-Process kubectl -ArgumentList 'port-forward -n textlens svc/textlens-api 8000:80' -WindowStyle Hidden
-```
+The API and dashboard Services are `LoadBalancer` type, and Docker Desktop
+publishes them on `localhost`, so they're reachable as soon as the rollout
+finishes. No port-forward is needed.
 
 | What | URL |
 |---|---|
 | Dashboard (upload a `.txt` here) | http://localhost:8501 |
 | API docs | http://localhost:8000/docs |
 
-The dashboard talks to the API inside the cluster, so the API port-forward is
-only needed for the API docs or for calling the API yourself. To keep a
-port-forward in the foreground instead, run the same `kubectl port-forward …`
-command in its own terminal and press `Ctrl+C` to stop it.
+Check that both Services show `localhost` under `EXTERNAL-IP`:
 
-If port 8000 or 8501 is already in use, change the left-hand number, for
-example `8088:80`.
+```shell
+kubectl get svc -n textlens
+```
+
+If one shows `<pending>`, something else on your machine already holds port
+8000 or 8501: an old `kubectl port-forward`, the Docker Compose setup, or a
+local `uvicorn` / `npm run dev`. Stop it (`lsof -i :8501` shows what's using
+the port) and the Service picks up the port by itself. To use other ports,
+change `port:` for that Service in `k8s/service.yaml` and apply again.
 
 ### Managing the deployment
 
@@ -97,39 +112,40 @@ example `8088:80`.
 |---|---|
 | Check status | `kubectl get pods -n textlens` |
 | Stop the app (keep everything deployed) | `kubectl scale deploy --all -n textlens --replicas=0` |
-| Start it again | `kubectl apply -n textlens -f k8s\` |
-| Redeploy after code changes | `docker compose build`, then copy the images into the cluster in kind mode (see step 1), then `kubectl rollout restart -n textlens deploy/textlens-api deploy/textlens-frontend`, then stop and restart the port-forwards (step 3) |
+| Start it again | `kubectl apply -n textlens -f k8s/` |
+| Redeploy after code changes | `docker compose build`, then copy the images into the cluster in kind mode (see step 1), then `kubectl rollout restart -n textlens deploy/textlens-api deploy/textlens-frontend` |
 | Follow API logs | `kubectl logs -n textlens deploy/textlens-api -f` |
 | Follow dashboard logs | `kubectl logs -n textlens deploy/textlens-frontend -f` |
-| Stop the port-forwards | `Get-Process kubectl \| Stop-Process` (stops **every** running `kubectl`) |
 | Remove everything | `kubectl delete namespace textlens` |
 
 `kubectl apply` restores the replica counts in the manifests (Redis 1, API 2,
-dashboard 1). Redis keeps no data, so stopping it clears past run results.
+dashboard 2). Redis keeps no data, so stopping it clears past run results.
 
 ### What gets deployed
 
-`k8s\deployment.yaml` defines three Deployments and `k8s\service.yaml` three
-ClusterIP Services, all in the `textlens` namespace:
+`k8s/deployment.yaml` defines three Deployments and `k8s/service.yaml` three
+Services, all in the `textlens` namespace. Redis is internal (`ClusterIP`); the
+API (port 8000) and dashboard (port 8501) are `LoadBalancer` Services published
+on `localhost`:
 
 | Component | Deployment / Service | Replicas | Connects to |
 |---|---|---|---|
 | Redis | `textlens-redis` | 1 | - |
 | API | `textlens-api` | 2 | Redis via `REDIS_URL=redis://textlens-redis:6379/0` |
-| Dashboard | `textlens-frontend` | 1 | API via `TEXTLENS_API_URL=http://textlens-api` |
+| Dashboard | `textlens-frontend` | 2 | API via `TEXTLENS_API_URL=http://textlens-api:8000` (nginx proxies `/api/*` there) |
 
 The hostnames are Service DNS names, so all three must be in the same namespace.
 
 ### Troubleshooting
 
-```powershell
+```shell
 kubectl get pods -n textlens
 kubectl describe pod -n textlens -l app.kubernetes.io/name=textlens-api        # e.g. image pull errors
 kubectl logs -n textlens deploy/textlens-api
-kubectl exec -n textlens deploy/textlens-frontend -- python -c "import requests; print(requests.get('http://textlens-api/health').text)"
+kubectl exec -n textlens deploy/textlens-frontend -- wget -qO- http://127.0.0.1:8080/api/health
 ```
 
-The last command checks that the dashboard pod can reach the API.
+The last command checks that the dashboard's nginx can proxy to the API.
 
 - **`ErrImagePull` / `ImagePullBackOff`:** the cluster can't see your local
   image. Rebuild with `docker compose build`, and check you're on the
@@ -138,15 +154,17 @@ The last command checks that the dashboard pod can reach the API.
   `Running` and `1/1` ready.
 - **The UI doesn't change after a redeploy:** the cluster is in kind mode and
   still has the old image. Check with
-  `kubectl exec -n textlens deploy/textlens-frontend -- cat app.py`. Copy the
+  `kubectl exec -n textlens deploy/textlens-frontend -- ls /usr/share/nginx/html/assets`
+  (the bundle file names change with every build). Copy the
   images into the cluster (step 1), then run `rollout restart` again.
-- **`localhost:8501` doesn't load:** the port-forward has stopped (they exit
-  when pods are restarted). Start it again.
+- **`localhost:8501` or `localhost:8000` doesn't load:** run
+  `kubectl get svc -n textlens`. An `EXTERNAL-IP` of `<pending>` means the port
+  is taken on your machine; see step 3.
 
 **Using minikube or kind instead:** these clusters can't see your local Docker
 images. Load both images after building:
 
-```powershell
+```shell
 minikube image load textlens-api:latest; minikube image load textlens-frontend:latest
 # or
 kind load docker-image textlens-api:latest textlens-frontend:latest
@@ -164,11 +182,13 @@ The manifests set `imagePullPolicy: IfNotPresent`, so no registry is needed.
   If that pod stops before a queued run starts, the run stays `pending` until
   it expires. Moving to a Prefect deployment with a separate worker would
   remove this limit.
-- **The dashboard runs as a single replica.** Streamlit keeps each browser
-  session in memory, so more replicas would need sticky sessions.
+- **The dashboard is stateless.** It is a static React bundle; all UI state
+  lives in the browser, so it scales to any number of replicas.
 - **Root filesystems are read-only.** The only writable path in each pod is
   `/tmp`, an `emptyDir`. The API keeps uploads and Prefect's local database
-  there; the dashboard uses it as `HOME`.
+  there; nginx keeps its pid and temp files there. The dashboard also mounts an
+  `emptyDir` at `/etc/nginx/conf.d`, where nginx renders its config from the
+  template at startup.
 - **The first upload on each API pod is slower** by a few seconds while
   Prefect starts its local server.
 
@@ -180,7 +200,10 @@ The manifests set `imagePullPolicy: IfNotPresent`, so no registry is needed.
 | `GET` | `/insights/{run_id}` | Returns `status`: `pending` → `running` → `completed` / `failed`. Includes `result` once completed, or `error` if failed |
 | `GET` | `/health` | Liveness check |
 
-Interactive docs are served at `/docs`. With the API port-forward running:
+Interactive docs are served at `/docs`. With the app running on Kubernetes (or
+Docker Compose):
+
+Windows (PowerShell):
 
 ```powershell
 $run = curl.exe -s -F "file=@sample.txt" http://localhost:8000/upload | ConvertFrom-Json
@@ -190,6 +213,13 @@ Invoke-RestMethod "http://localhost:8000/insights/$($run.run_id)"
 
 Use `curl.exe`, not `curl`: in Windows PowerShell, `curl` is an alias for
 `Invoke-WebRequest`, which doesn't accept `-F`.
+
+macOS (zsh/bash):
+
+```bash
+run_id=$(curl -s -F "file=@sample.txt" http://localhost:8000/upload | python3 -c "import sys, json; print(json.load(sys.stdin)['run_id'])")
+curl -s "http://localhost:8000/insights/$run_id" | python3 -m json.tool
+```
 
 ## Configuration
 
@@ -208,10 +238,12 @@ Dashboard settings:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `TEXTLENS_API_URL` | `http://localhost:8000` | Base URL of the API |
+| `TEXTLENS_API_URL` | `http://localhost:8000` | Base URL of the API that nginx (or the Vite dev server) proxies `/api/*` to |
 
-Theme and upload limit settings for the dashboard are in `.streamlit\config.toml`.
-On Kubernetes, the values are set in the `env:` sections of `k8s\deployment.yaml`.
+The dashboard's source is in `frontend/` (Vite + React + TypeScript); its styles
+are in `frontend/src/styles.css` and the nginx config in
+`frontend/nginx.conf.template`.
+On Kubernetes, the values are set in the `env:` sections of `k8s/deployment.yaml`.
 
 ## Alternative: Docker Compose
 
@@ -219,7 +251,7 @@ Runs the same three services without Kubernetes. Use one or the other, not
 both: Compose starts its own Redis and API, and both setups use ports 8000 and
 8501 on your machine.
 
-```powershell
+```shell
 docker compose up -d --build
 ```
 
@@ -246,34 +278,52 @@ Needs a recent Python (tested on 3.14; the Docker images use 3.14 too) and
 Docker Desktop for Redis. The first run downloads NLTK data, so it needs
 internet access.
 
+Create and activate a virtual environment.
+
+Windows (PowerShell):
+
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements-dev.txt
-docker compose up -d redis          # Redis on localhost:6379
-uvicorn main:app --reload           # API on localhost:8000
+.venv\Scripts\Activate
 ```
 
 If `Activate.ps1` is blocked by the execution policy, run
 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once and try again.
 
+macOS (zsh/bash):
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Then, in either shell:
+
+```shell
+pip install -r requirements-dev.txt
+docker compose up -d redis          # Redis on localhost:6379
+uvicorn main:app --reload           # API on localhost:8000
+```
+
 Run the tests (they use in-memory fakeredis, so Redis isn't needed):
 
-```powershell
+```shell
 pytest -q
 ```
 
-Run the dashboard against the local API, in a second terminal with the venv
-activated:
+Run the dashboard against the local API, in a second terminal. It needs
+Node.js 20.19+ or 22.12+ (Vite 8 needs one of these):
 
-```powershell
-pip install -r requirements-frontend.txt
-$env:TEXTLENS_API_URL = "http://localhost:8000"
-streamlit run app.py                # opens on localhost:8501
+```shell
+cd frontend
+npm install
+npm run dev                         # opens on localhost:8501
 ```
 
-`TEXTLENS_API_URL` already defaults to `http://localhost:8000`, so the second
-line is only needed when the API runs somewhere else.
+The Vite dev server proxies `/api/*` to `TEXTLENS_API_URL` (default
+`http://localhost:8000`), so set that variable only when the API runs somewhere
+else. `npm run build` type-checks and writes the production bundle to
+`frontend/dist/`.
 
-Stop the Kubernetes port-forwards first if they're running, since they also use
-ports 8000 and 8501.
+If the Kubernetes deployment is running, it already holds ports 8000 and 8501.
+Remove it first with `kubectl delete namespace textlens`.
